@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "EZVIZ / Hik-Connect bulut kameralariga kirish va shifrlangan oqimlarni deshifrlash (H.264/H.265, RTP + MPEG-PS)"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.12"  # pyezvizapi 1.0.5.0 requires it
 keywords = ["ezviz", "hik-connect", "hikvision", "cctv", "rtsp", "camera", "hevc", "decrypt"]
 authors = [{ name = "Bahrombek" }]
 classifiers = [
@@ -17,11 +17,14 @@ classifiers = [
     "Topic :: Multimedia :: Video",
     "Operating System :: OS Independent",
 ]
+# Pinned: this package handles the cloud account password and the cameras'
+# video keys, so an upgrade is a code review, not a side effect of `pip install`.
+# pyezvizapi 1.0.5.0 is the version audited (sdist sha256 0f7346a1...73a3).
 dependencies = [
-    "pyezvizapi",
-    "numpy",
-    "requests",
-    "pycryptodome",
+    "pyezvizapi==1.0.5.0",
+    "numpy==2.1.3",
+    "requests==2.32.3",
+    "pycryptodome==3.21.0",
 ]
 
 [project.optional-dependencies]

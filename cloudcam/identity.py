@@ -29,6 +29,8 @@ import hashlib
 import os
 import uuid
 
+from .safety import write_private
+
 _FILENAME = "feature_code.txt"
 _ENV = "CLOUDCAM_FEATURE_CODE"
 _cached: str | None = None
@@ -74,8 +76,8 @@ def feature_code() -> str:
     code = _from_mac()
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(code)
+        # 0600 like the token next to it: the cloud binds the session to it.
+        write_private(path, code)
     except OSError:
         pass            # yozolmasak ham ishlayveramiz — MAC baribir barqaror
     _cached = code
