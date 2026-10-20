@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass, field
 
 from .client import MfaRequired
+from .safety import write_private_json
 from .settings import get_active
 
 
@@ -40,17 +41,16 @@ def load(path: str | None = None) -> dict[str, str]:
 
 def save(keys: dict[str, str], path: str | None = None) -> None:
     """Kodlarni ATOMAR yozadi (yozish paytida uzilsa eski fayl buzilmasin)."""
-    p = _path(path)
-    tmp = f"{p}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(keys, f, indent=2, sort_keys=True)
-    os.replace(tmp, p)
+    # 0600: a verification code is the camera's video key.
+    write_private_json(_path(path), keys, indent=2, sort_keys=True)
 
 
 def set_code(serial: str, code: str, path: str | None = None) -> dict[str, str]:
     """Bitta kodni qo'shib, faylni saqlaydi."""
     keys = load(path)
-    keys[serial] = code.strip().upper()
+    # Exactly as typed (README: codes are case-sensitive). Upper-casing a code
+    # set in the app with lower case letters gave a wrong key and grey video.
+    keys[serial] = code.strip()
     save(keys, path)
     return keys
 

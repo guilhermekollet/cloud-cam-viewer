@@ -76,8 +76,10 @@ def cmd_keys(args) -> int:
             print(f"2FA kod {where} yuborildi. Qayta ishga tushiring:\n"
                   f"  cloudcam keys --code <KOD>")
             return 2
-        for serial, code in sorted(res.fetched.items()):
-            print(f"{serial}  {code}")
+        # The code is the camera's video key; it goes to the file, not to a
+        # terminal or `docker logs`.
+        for serial in sorted(res.fetched):
+            print(f"{serial}  ******  (saved)")
         if res.skipped:
             print(f"({len(res.skipped)} ta kod allaqachon bor — "
                   f"qayta olish uchun --overwrite)")

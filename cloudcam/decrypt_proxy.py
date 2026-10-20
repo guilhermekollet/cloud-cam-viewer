@@ -39,6 +39,7 @@ from pyezvizapi.stream import rtp_payload
 
 from . import vtm_cache
 from .identity import feature_code
+from .safety import check_api_domain, check_auth_url, check_media_host
 from .settings import get_active
 
 # Platformaga qarab klient turi (pagelist to'liq natija qaytarishi uchun muhim)
@@ -84,6 +85,20 @@ def _paged_vtm_page_list(client):
 
 # kutubxonaning bir-sahifali funksiyasini to'liq sahifalovchi bilan almashtiramiz
 _cs.get_vtm_page_list = _paged_vtm_page_list
+
+# The relay host comes from the cloud's resource list and gets a raw TCP
+# connection. Checked where the URL is built, so it holds whatever shape the
+# response has. Installed before `set_substream` captures the builder, which
+# keeps the check in the chain for both main and sub streams.
+_unchecked_build_vtm_url = _cs.build_vtm_url
+
+
+def _checked_build_vtm_url(host, port, *args, **kwargs):
+    check_media_host(host, port)
+    return _unchecked_build_vtm_url(host, port, *args, **kwargs)
+
+
+_cs.build_vtm_url = _checked_build_vtm_url
 # ...va uning USTIGA hisob bo'yicha fayl keshini qo'yamiz ([[vtm_cache]]):
 # pagelist + VTDU token har ochilishda ~6s bulutda ketardi, kesh bilan ~0.2s.
 _CACHE_KEY = vtm_cache.install()
@@ -996,6 +1011,8 @@ def _make_client():
     import re
     with open(get_active().token_file, encoding="utf-8") as f:
         token = json.load(f)
+    # Every request below carries the session id to this host.
+    token["api_url"] = check_api_domain(token.get("api_url"))
     client = EzvizClient(token.get("username"), None, token.get("api_url"), token=token)
     # Klient turi — busiz pagelist hamma resurslarni qaytarmaydi (platformaga qarab)
     try:
@@ -1010,6 +1027,9 @@ def _make_client():
         if m:
             client._token.setdefault("service_urls", {})["authAddr"] = \
                 f"https://{m.group(1)}auth.ezvizlife.com"
+    else:
+        # A stored authAddr gets the session too; same rule as the API host.
+        client._token.setdefault("service_urls", {})["authAddr"] = check_auth_url(su["authAddr"])
     return client
 
 

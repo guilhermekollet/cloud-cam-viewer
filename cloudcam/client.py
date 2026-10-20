@@ -18,11 +18,13 @@ o'zini oqlagan (`ezviz-ha-addon`, `hikconnect`, `pyezvizapi`):
 
 import hashlib
 import json
+import sys
 import time
 
 import requests
 
 from .identity import feature_code
+from .safety import UntrustedHost, check_api_domain, write_private_json
 
 
 def md5(text: str) -> str:
@@ -57,7 +59,7 @@ class CloudClient:
         self.platform = platform if platform in self.PLATFORMS else "hikconnect"
         cfg = self.PLATFORMS[self.platform]
         # region berilgan bo'lsa uni, aks holda platforma standartini ishlatamiz
-        self.api_url = region or cfg["domain"]
+        self.api_url = check_api_domain(region or cfg["domain"])
         self.session_id = None
         self.rf_session_id = None
         self.user_code = None
@@ -136,7 +138,8 @@ class CloudClient:
             data = r.json()
             code = data.get("meta", {}).get("code")
             if code == 1100:  # boshqa regionga yo'naltirish
-                self.api_url = data["loginArea"]["apiDomain"]
+                # The next iteration re-sends the password to this host.
+                self.api_url = check_api_domain(data["loginArea"]["apiDomain"])
                 continue
             if code in (1013, 1014, 1226):
                 raise RuntimeError("Login xatosi: email yoki parol noto'g'ri")
@@ -166,7 +169,8 @@ class CloudClient:
             raise RuntimeError(f"Login xatosi: {data.get('meta') if data else 'javob yo`q'}")
         self.session_id = data["loginSession"]["sessionId"]
         self.rf_session_id = data["loginSession"]["rfSessionId"]
-        self.api_url = data.get("loginArea", {}).get("apiDomain", self.api_url)
+        self.api_url = check_api_domain(
+            data.get("loginArea", {}).get("apiDomain", self.api_url))
         self.user_code = data.get("loginUser", {}).get("userCode")
         self.session.headers.update({"sessionId": self.session_id})
         self.session_time = time.time()
@@ -189,9 +193,15 @@ class CloudClient:
         saved_fc = tok.get("feature_code")
         if saved_fc and saved_fc != self.FEATURE_CODE:
             return False
+        # A token pointing elsewhere is not resumed: the session id would go
+        # to that host on every request.
+        try:
+            api_url = check_api_domain(tok.get("api_url") or self.api_url)
+        except UntrustedHost:
+            return False
         self.session_id = tok["session_id"]
         self.rf_session_id = tok.get("rf_session_id")
-        self.api_url = tok.get("api_url") or self.api_url
+        self.api_url = api_url
         self.email = tok.get("username") or self.email
         if tok.get("platform") in self.PLATFORMS:
             self.platform = tok["platform"]
@@ -243,6 +253,7 @@ class CloudClient:
         24/7 ishlash uchun muhim. Muvaffaqiyatsiz bo'lsa to'liq qayta login
         qiladi (`allow_login=False` bo'lsa xato ko'taradi).
         """
+        reason = None
         try:
             r = self.session.put(
                 f"https://{self.api_url}/v3/apigateway/login",
@@ -253,18 +264,25 @@ class CloudClient:
                 timeout=25,
             )
             data = r.json()
-            if data.get("meta", {}).get("code") == 200:
+            code = data.get("meta", {}).get("code")
+            if code == 200:
                 info = data.get("sessionInfo", {})
                 self.session_id = info.get("sessionId", self.session_id)
                 self.rf_session_id = info.get("refreshSessionId", self.rf_session_id)
                 self.session.headers.update({"sessionId": self.session_id})
                 self.session_time = time.time()
                 return True
-        except Exception:
-            pass
+            reason = f"meta.code {code}"
+        except Exception as err:
+            # Type and message only: neither carries the session or the
+            # refresh token, which travel in headers and the form body.
+            reason = f"{type(err).__name__}: {err}"
+        # A swallowed failure here used to turn into a silent password login
+        # every 25 minutes; say why before deciding what to do.
+        print(f"[cloudcam] session refresh failed ({reason})", file=sys.stderr)
         # Refresh ishlamasa — to'liq qayta login
         if not allow_login:
-            raise RuntimeError("Sessiyani yangilab bo'lmadi (refresh token eskirgan)")
+            raise RuntimeError(f"Sessiyani yangilab bo'lmadi ({reason})")
         self.login()
         return True
 
@@ -395,7 +413,9 @@ class CloudClient:
         data = r.json()
         code = data.get("meta", {}).get("code")
         if code == 200 and data.get("devAuthCode"):
-            return str(data["devAuthCode"]).strip().upper()
+            # Kept as the cloud returns it: the code IS the AES key, and one
+            # changed in the app may have lower case letters.
+            return str(data["devAuthCode"]).strip()
         if code == 80000:
             raise MfaRequired("2FA kod kerak (meta.code 80000)")
         if code == 2009:
@@ -407,16 +427,17 @@ class CloudClient:
 
         `feature_code` ham yoziladi: token boshqa kompyuterga ko'chirilsa
         [[load_token]] uni rad etadi (bulut baribir qabul qilmaydi)."""
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({
-                "session_id": self.session_id,
-                "rf_session_id": self.rf_session_id,
-                "username": self.email,
-                "api_url": self.api_url,
-                "platform": self.platform,
-                "feature_code": self.FEATURE_CODE,
-                # Haqiqiy yosh yoziladi: noma'lum (0) bo'lsa `connect()`
-                # yangilaydi. `time.time()` qo'yilsa sessiya "yangi" ko'rinib,
-                # eskirgan holda ishlatilardi.
-                "session_time": self.session_time,
-            }, f)
+        # Atomic and 0600: the proxy re-reads this on every connection while a
+        # refresher rewrites it, and it holds a long-lived refresh credential.
+        write_private_json(path, {
+            "session_id": self.session_id,
+            "rf_session_id": self.rf_session_id,
+            "username": self.email,
+            "api_url": self.api_url,
+            "platform": self.platform,
+            "feature_code": self.FEATURE_CODE,
+            # Haqiqiy yosh yoziladi: noma'lum (0) bo'lsa `connect()`
+            # yangilaydi. `time.time()` qo'yilsa sessiya "yangi" ko'rinib,
+            # eskirgan holda ishlatilardi.
+            "session_time": self.session_time,
+        })
